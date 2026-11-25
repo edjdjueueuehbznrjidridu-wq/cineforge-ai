@@ -1,0 +1,245 @@
+name: CineForge AI Studio 0.5.0 · Bootstrap, Test and Render
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Describe the exact video idea"
+        required: true
+        default: "A cinematic short film about a city waking up after a long winter"
+        type: string
+      duration:
+        description: "Duration in seconds (5-600; compute budget is checked)"
+        required: true
+        default: "20"
+        type: string
+      style:
+        description: "Visual art direction"
+        required: true
+        default: "cinematic"
+        type: choice
+        options: [cinematic, minimal, documentary, motion, cyberpunk, retro, luxury, nature, corporate, dream]
+      provider:
+        description: "Text director provider"
+        required: true
+        default: "nestapi"
+        type: choice
+        options: [nestapi, gemini, local]
+      ai_model:
+        description: "Model ID (custom IDs accepted)"
+        required: true
+        default: "gpt5"
+        type: string
+      multi_agent:
+        description: "Run three specialist agents in parallel before final direction"
+        required: true
+        default: true
+        type: boolean
+      resolution:
+        description: "Output resolution"
+        required: true
+        default: "720p"
+        type: choice
+        options: [540p, 720p, 1080p]
+      aspect:
+        description: "Frame aspect ratio"
+        required: true
+        default: "9:16"
+        type: choice
+        options: ["9:16", "16:9", "1:1"]
+      fps:
+        description: "Frame rate"
+        required: true
+        default: "24"
+        type: choice
+        options: ["24", "30", "60"]
+      quality:
+        description: "H.264 quality profile"
+        required: true
+        default: "high"
+        type: choice
+        options: [fast, balanced, high, ultra]
+      music:
+        description: "Music mood; auto follows the creative brief"
+        required: true
+        default: "auto"
+        type: choice
+        options: [auto, none, mellow, cinematic, pulse, ambient, hopeful, dark, epic, focus, playful, tension, dreamy, emotional, electronic, documentary]
+      music_volume:
+        description: "Background score volume (0-40)"
+        required: true
+        default: 22
+        type: number
+      music_tempo:
+        description: "Music tempo BPM (0 = director decides; otherwise 60-160)"
+        required: true
+        default: 0
+        type: number
+      visual_engine:
+        description: "Parallel scene-image engine"
+        required: true
+        default: "ensemble"
+        type: choice
+        options: [ensemble, nano_banana, ai_image_generator, procedural]
+      image_quality:
+        description: "Image-generation quality"
+        required: true
+        default: "high"
+        type: choice
+        options: [standard, high]
+      refine_images:
+        description: "Run the AI image-editing pass after selection"
+        required: true
+        default: false
+        type: boolean
+      upscale_images:
+        description: "Upscale selected keyframes"
+        required: true
+        default: true
+        type: boolean
+      upscale_scale:
+        description: "Upscale factor"
+        required: true
+        default: "2"
+        type: choice
+        options: ["2", "3", "4"]
+      voiceover_text:
+        description: "Optional narration text (up to 5000 characters)"
+        required: false
+        default: ""
+        type: string
+      voiceover_voice:
+        description: "NestAPI voice ID"
+        required: false
+        default: "auto"
+        type: string
+      allow_procedural_fallback:
+        description: "Allow procedural fallback when AI keyframes fail quality coverage"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cineforge-bootstrap-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-test-render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      PYTHONUNBUFFERED: "1"
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install FFmpeg and Persian fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core fonts-noto-core fonts-noto-extra
+      - name: Extract uploaded project ZIP safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f app/main.py && -f web/index.html ]]; then
+            echo "CineForge sources already exist at repository root."
+          else
+            ZIP="$(find . -maxdepth 1 -type f -name 'CineForge_AI_Studio_v0.5.0.zip' -print -quit)"
+            if [[ -z "${ZIP:-}" ]]; then
+              echo "CineForge_AI_Studio_v0.5.0.zip was not found in the repository root."
+              exit 1
+            fi
+            python - <<'PY'
+            import shutil
+            import zipfile
+            from pathlib import Path
+
+            archive_path = Path("CineForge_AI_Studio_v0.5.0.zip")
+            extract_dir = Path("/tmp/cineforge-source").resolve()
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            extract_dir.mkdir(parents=True)
+            with zipfile.ZipFile(archive_path) as archive:
+                for item in archive.infolist():
+                    destination = (extract_dir / item.filename).resolve()
+                    if destination != extract_dir and extract_dir not in destination.parents:
+                        raise SystemExit(f"Unsafe ZIP path: {item.filename}")
+                archive.extractall(extract_dir)
+            roots = [
+                path.parent.parent
+                for path in extract_dir.rglob("app/main.py")
+                if (path.parent.parent / "web" / "index.html").is_file()
+            ]
+            if len(roots) != 1:
+                raise SystemExit(f"Expected exactly one CineForge project root; found {len(roots)}")
+            ignore = shutil.ignore_patterns(
+                ".venv", "__pycache__", ".pytest_cache", "*.pyc", "*.sqlite3",
+                "*.sqlite3-shm", "*.sqlite3-wal", ".secret.key", ".env",
+            )
+            shutil.copytree(roots[0], Path.cwd(), dirs_exist_ok=True, ignore=ignore)
+            print(f"Extracted CineForge sources from {archive_path.name}")
+            PY
+          fi
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compile, test and check frontend
+        run: |
+          python -m compileall -q app scripts tests
+          pytest -q
+          node --check web/app.js
+      - name: Commit extracted project source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "Install CineForge AI Studio 0.5.0 source"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          else
+            echo "Source files are already present."
+          fi
+      - name: Render requested production video
+        env:
+          DEMO_PROMPT: ${{ inputs.prompt }}
+          DEMO_DURATION: ${{ inputs.duration }}
+          DEMO_STYLE: ${{ inputs.style }}
+          DEMO_RESOLUTION: ${{ inputs.resolution }}
+          DEMO_PROVIDER: ${{ inputs.provider }}
+          DEMO_AI_MODEL: ${{ inputs.ai_model }}
+          DEMO_MULTI_AGENT: ${{ inputs.multi_agent }}
+          DEMO_ASPECT: ${{ inputs.aspect }}
+          DEMO_FPS: ${{ inputs.fps }}
+          DEMO_QUALITY: ${{ inputs.quality }}
+          DEMO_MUSIC: ${{ inputs.music }}
+          DEMO_MUSIC_VOLUME: ${{ inputs.music_volume }}
+          DEMO_MUSIC_TEMPO: ${{ inputs.music_tempo }}
+          DEMO_VISUAL_ENGINE: ${{ inputs.visual_engine }}
+          DEMO_IMAGE_QUALITY: ${{ inputs.image_quality }}
+          DEMO_REFINE_IMAGES: ${{ inputs.refine_images }}
+          DEMO_UPSCALE_IMAGES: ${{ inputs.upscale_images }}
+          DEMO_UPSCALE_SCALE: ${{ inputs.upscale_scale }}
+          DEMO_VOICEOVER_TEXT: ${{ inputs.voiceover_text }}
+          DEMO_VOICEOVER_VOICE: ${{ inputs.voiceover_voice }}
+          DEMO_ALLOW_PROCEDURAL_FALLBACK: ${{ inputs.allow_procedural_fallback }}
+        run: python scripts/render_demo.py
+      - name: Upload video, poster, plan and production report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cineforge-production-${{ github.run_number }}
+          path: |
+            data/outputs/*.mp4
+            data/outputs/*.jpg
+            data/outputs/*.json
+          if-no-files-found: error
+          retention-days: 14
