@@ -160,7 +160,6 @@ jobs:
             fi
             echo "Extracting ZIP..."
             unzip -o CineForge_AI_Studio_v0.5.0.zip -d /tmp/cineforge
-            # Find the real project root
             PROJECT_ROOT=$(find /tmp/cineforge -type f -name "main.py" -path "*/app/main.py" | head -1 | xargs dirname | xargs dirname)
             echo "Project root found at: $PROJECT_ROOT"
             cp -a "$PROJECT_ROOT"/. .
@@ -184,12 +183,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "Install CineForge AI Studio 0.5.0 source"
-            git push origin HEAD:${GITHUB_REF_NAME}
-          else
+          if git diff --cached --quiet; then
             echo "No changes to commit."
+          else
+            git commit -m "Install CineForge AI Studio 0.5.0 source"
+            git push "https://x-access-token:\( {GITHUB_TOKEN}@github.com/ \){GITHUB_REPOSITORY}.git" HEAD:${GITHUB_REF_NAME}
           fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Render production video
         env:
